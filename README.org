@@ -1,0 +1,137 @@
+* search-engine-indexer
+  :PROPERTIES:
+  :header-args:bash: :session search_engine_indexer.sh :results none :exports code
+  :END:
+
+  Builds an alphabetically sorted search term log file from unsorted search term
+  log files.
+
+** Dependencies
+   search-engine-indexer can be run either from a JAR file or from a Docker
+   image.
+
+*** JAR file dependencies
+    - Java
+
+*** Docker image dependencies
+    - Docker
+
+** Usage
+   #+begin_src text
+   search-engine-indexer 0.1.0-SNAPSHOT
+
+   search-engine-indexer is a tool for working with search term log files
+
+   Usage
+     java -jar search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar [SUBCOMMAND] [OPTIONS]
+
+   Options
+     -v, --version  Show version
+     -h, --help     Show help
+
+   Subcommands
+     generate
+       --dictionary-file DICTIONARY_FILE
+       --number-of-output-files NUMBER_OF_OUTPUT_FILES
+       --human-bytes-to-write HUMAN_BYTES_TO_WRITE
+       --output-directory OUTPUT_DIRECTORY
+
+     process
+       --input-directory INPUT_DIRECTORY
+       --output-file OUTPUT_FILE
+   #+end_src
+
+*** JAR file
+**** Download
+    #+begin_src bash
+    wget https://s3.amazonaws.com/search-engine-indexer/jars/search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar
+    #+end_src
+
+**** Run
+    #+begin_src bash
+    java -jar search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar --help
+    #+end_src
+
+*** Docker image
+    Based on =openjdk:11.0.4-jre-slim= which is 204MB.
+
+    #+begin_src bash
+    docker run mpereira/search-engine-indexer:0.1.0 --help
+    #+end_src
+
+** Running a simulation
+
+** Development
+   Work on search-engine-indexer is mostly done on Emacs. The workflow looks
+   like:
+   1. A CIDER session is started with =M-x cider-jack-in=
+   2. Code is evaluated with with =cider-eval-sexp-at-point= or
+      =cider-eval-buffer=
+   3. Tests are run with =cider-test-run-test= or =cider-test-run-ns-tests=
+
+*** Dependencies
+    - Java
+    - Leiningen
+    - Docker
+
+*** Check out repository
+    #+begin_src bash
+    git clone git@github.com:mpereira/search-engine-indexer.git
+    #+end_src
+
+*** ~cd~ into repository
+    #+begin_src bash
+    cd search-engine-indexer
+    #+end_src
+
+*** Running tests
+    #+begin_src bash
+    lein test
+    #+end_src
+
+*** Building uberjar
+    #+begin_src bash
+    lein do clean, uberjar
+    #+end_src
+
+*** Publishing uberjar
+    #+begin_src bash
+    aws s3 cp --acl public-read \
+      target/uberjar/search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar \
+      s3://search-engine-indexer/jars/search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar
+    #+end_src
+
+*** Building Docker image
+    #+begin_src bash
+    docker build -t mpereira/search-engine-indexer:0.1.0 .
+    #+end_src
+
+*** Publishing Docker image
+    #+begin_src bash
+    docker login
+    #+end_src
+
+    #+begin_src bash
+    docker push mpereira/search-engine-indexer:0.1.0
+    #+end_src
+
+** License
+   Copyright © 2019 Murilo Pereira <murilo@murilopereira.com>
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
