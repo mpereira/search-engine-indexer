@@ -1,8 +1,30 @@
 (ns search-engine-indexer.utils
-  (:require [clojure.java.io :as io]
-            [clojure.pprint :refer [pprint]]))
+  (:require [clojure.java.io :as io])
+  (:import java.util.Properties))
 
-(defmacro runtime [& body]
+(defn jar-path
+  "Returns the full path of the JAR file in which this function is invoked."
+  [& [ns]]
+  (-> (or ns (class *ns*))
+      (.getProtectionDomain)
+      (.getCodeSource)
+      (.getLocation)
+      (.toURI)
+      (.getPath)))
+
+(defn version
+  "Returns the version number for a given x or namespace."
+  [x]
+  (when-let [properties (io/resource (str "META-INF/maven"
+                                          "/" (or (namespace x) (name x))
+                                          "/" (name x)
+                                          "/" "pom.properties"))]
+    (with-open [stream (io/input-stream properties)]
+      (.getProperty (doto (Properties.) (.load stream)) "version"))))
+
+(defmacro runtime
+  "Returns a map with the return value from body and its runtime information."
+  [& body]
   `(let [start# (. System (nanoTime))
          result# (do ~@body)
          runtime-ms# (/ (- (. System (nanoTime))
@@ -11,9 +33,6 @@
      {:runtime-ms runtime-ms#
       :runtime-s (/ runtime-ms# 1000)
       :value result#}))
-
-(defn pprinted-string [x]
-  (with-out-str (pprint x))
 
 (defn lazy-file-seq
   "Create a lazy seq of lines from given file."

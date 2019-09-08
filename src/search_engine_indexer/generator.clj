@@ -91,10 +91,3 @@
                         (format "%.2f" (/ (/ @bytes-written 1000000) runtime-s))
                         " MB/s"
                         ")")))))))
-
-(comment
-  (let [size "0.5GB"]
-    (generate-random-search-term-files (io/resource "dictionary.txt")
-                                       15
-                                       size
-                                       (str "search-terms-" size))))

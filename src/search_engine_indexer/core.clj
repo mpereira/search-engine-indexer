@@ -1,66 +1,178 @@
 (ns search-engine-indexer.core
   (:gen-class)
-  (:require [clojure.java.io :as io]
-            [clojure.pprint :refer [pprint]]
-            [clojure.string :as s]
-            [search-engine-indexer.utils
-             :refer [files-equal? lazy-file-seq runtime truncate-file]]))
+  (:require [clojure.string :as s]
+            [clojure.tools.cli :refer [parse-opts]]
+            [search-engine-indexer.generator :as generator]
+            [search-engine-indexer.processor :as processor]
+            [search-engine-indexer.utils :refer [jar-path version]]))
 
-(defn process
-  "TODO: docstring."
-  [input-directory output-file]
-  (let [occurrence-counts (atom (sorted-map))
-        input-files (.listFiles (io/file input-directory))
-        _ (println "Processing files in"
-                   (str "'" (.getAbsolutePath (io/file input-directory)) "'"))
-        _ (doseq [file-name input-files
-                  :let [file (io/file file-name)]]
-            (println (str "'" (.getAbsolutePath file) "'")
-                     (str "(" (.length file) " bytes)")))
-        {:keys [runtime-s]}
-        (runtime
-         ;; For each input file.
-         (doseq [input-file input-files]
-           ;; For each line (search term).
-           (doseq [term (lazy-file-seq input-file)]
-             ;; Increment sorted hashmap entry for term.
-             (swap! occurrence-counts update term (fnil inc 0))))
-         (println "Term occurrences across all files in"
-                  (str "'" (.getAbsolutePath (io/file input-directory)) "'"))
-         (println (s/trim-newline (with-out-str (pprint @occurrence-counts))))
-         ;; Truncate output file if it exists.
-         (truncate-file output-file)
-         (println "Writing sorted search terms to"
-                  (str "'" (.getAbsolutePath (io/file output-file)) "'"))
-         (with-open [w (io/writer output-file :append true)]
-           ;; For each key/value in the sorted hashmap.
-           (doseq [[term occurrence-count] @occurrence-counts]
-             ;; Write the term to the output file N times.
-             (dotimes [_ occurrence-count]
-               (.write w (str term "\n"))))))
-        bytes-processed (->> input-files
-                             (map (memfn length))
-                             (reduce +))]
-    (println bytes-processed "bytes processed in"
-             (format "%.2f" runtime-s) "seconds"
-             (str "("
-                  (format "%.2f" (/ (/ bytes-processed 1000000) runtime-s))
-                  " MB/s"
-                  ")"))))
+(def program-name "search-engine-indexer")
 
-(comment
-  (let [input-directory (io/resource "input")
-        output-file "output.log"
-        expected-output-file-resource (io/resource "expected_output.log")]
-    (process input-directory output-file)
-    (files-equal? output-file expected-output-file-resource))
+(def program-version (version 'search-engine-indexer))
 
-  (let [size "5MiB"
-        input-directory (str "search-terms-" size)
-        output-file (str input-directory ".log")]
-    (process input-directory output-file)))
+(def program-jar-path (jar-path))
+
+(defn run-generate [{:keys [dictionary-file
+                            number-of-output-files
+                            human-bytes-to-write
+                            output-directory]}]
+  (assert (and dictionary-file
+               number-of-output-files
+               human-bytes-to-write
+               output-directory)
+          "all parameters must be present")
+  (println "Dictionary file:                                            "
+           dictionary-file)
+  (println "Number of unsorted search term log output files:            "
+           number-of-output-files)
+  (println "Human-readable number bytes to write across output files:   "
+           human-bytes-to-write)
+  (println "Output directory for unsorted search term log output files: "
+           output-directory)
+  (println "")
+  (generator/generate-random-search-term-files dictionary-file
+                                               number-of-output-files
+                                               human-bytes-to-write
+                                               output-directory))
+
+(defn run-process [{:keys [input-directory output-file]}]
+  (assert (and input-directory output-file)
+          "all parameters must be present")
+  (println "Input directory with unsorted search term log files: "
+           input-directory)
+  (println "Output file to be created with sorted search terms:  "
+           output-file)
+  (println "")
+  (processor/process-directory input-directory output-file))
+
+(def runners
+  {:generate run-generate
+   :process run-process})
+
+(def cli-options
+  {:help [["-v" "--version" "Show version"
+           :id :version]
+          ["-h" "--help" "Show help"
+           :id :help]]
+   :generate [[nil "--dictionary-file DICTIONARY_FILE"
+               "File with unique terms"
+               :id :dictionary-file]
+              [nil "--number-of-output-files NUMBER_OF_OUTPUT_FILES"
+               "Number of unsorted search term log output files. Defaults to 1"
+               :default 1
+               :parse-fn #(Integer/parseInt %)
+               :id :number-of-output-files]
+              [nil "--human-bytes-to-write HUMAN_BYTES_TO_WRITE"
+               (str "Human-readable number bytes to write across output files"
+                    " "
+                    "E.g.: 10MB, 1GiB")
+               :id :human-bytes-to-write]
+              [nil "--output-directory OUTPUT_DIRECTORY"
+               "Output directory for unsorted search term log output files"
+               :id :output-directory]]
+   :process [[nil "--input-directory INPUT_DIRECTORY"
+              "Input directory with unsorted search term log files"
+              :id :input-directory]
+             [nil "--output-file OUTPUT_FILE"
+              "Output file to be created with sorted search terms"
+              :id :output-file]]})
+
+(def available-subcommands (set (keys cli-options)))
+
+(defn usage-message [summary subcommand & [{:keys [show-preamble?]
+                                            :or {show-preamble? true}}]]
+  (let [preamble
+        (when show-preamble?
+          (->> [(str program-name " " program-version)
+                ""
+                (str program-name " "
+                     "is a tool for working with search term log files")
+                ""]
+               (s/join \newline)))]
+    (->> [preamble
+          "Usage"
+          (str "  java -jar " program-jar-path " [SUBCOMMAND] [OPTIONS]")
+          ""
+          "Options"
+          summary
+          ""
+          "Subcommands"
+          (->> (dissoc cli-options :help)
+               (map (fn [[subcommand options]]
+                      (str "  " (name subcommand) \newline
+                           (s/join \newline
+                                   (map #(str "    " (nth % 1)) options)))))
+               (s/join "\n\n"))]
+         (s/join \newline))))
+
+(defn error-message [{:keys [raw-args errors] :as parsed-opts} subcommand]
+  (str "The following errors occurred while parsing your command:"
+       " "
+       "`" program-name " " (s/join " " raw-args) "`"
+       "\n\n"
+       (s/join \newline errors)
+       "\n\n"
+       "Run `"
+       program-name " --help"
+       "` for more information"))
+
+(defn valid-command? [{:keys [arguments summary options errors] :as parsed-opts}]
+  (empty? errors))
+
+(defn dispatch-command
+  [{:keys [arguments summary options raw-args] :as parsed-opts} subcommand]
+  (cond
+    (or (nil? subcommand)
+        (= :help subcommand)
+        (:help options)
+        (contains? (set arguments) "help")) {:stdout (usage-message summary
+                                                                    subcommand)
+                                             :return-code 0}
+    (:version options) {:stdout version
+                        :return-code 0}
+    (and subcommand
+         (valid-command? parsed-opts)) {:stdout
+                                        ((get runners subcommand) options)
+                                        :return-code 0}
+    :else {:stdout
+           (str "Invalid command: "
+                "`"
+                program-name (when raw-args (str " " (s/join " " raw-args)))
+                "`"
+                \newline
+                (usage-message summary subcommand {:show-preamble? false}))
+           :return-code 1}))
 
 (defn -main
-  "I don't do a whole lot ... yet."
+  "Entry-point to search-engine-indexer."
   [& args]
-  (println "Hello, World!"))
+  (let [{:keys [options arguments] :as parsed-opts}
+        (parse-opts args (:help cli-options))
+        possible-subcommand (first args)
+        subcommand-likely? (= possible-subcommand (first arguments))]
+    (if-let [subcommand (keyword (if subcommand-likely?
+                                   possible-subcommand
+                                   "help"))]
+      (if (contains? available-subcommands subcommand)
+        (let [{:keys [arguments errors] :as parsed-opts}
+              (assoc (parse-opts args (get cli-options subcommand))
+                     :raw-args args)]
+          (if errors
+            (println (error-message parsed-opts subcommand))
+            (if (< 1 (count arguments))
+              (do
+                (println "More than one subcommand given:" arguments)
+                (println "Available subcommands:" available-subcommands))
+              (let [{:keys [stdout return-code]}
+                    (dispatch-command parsed-opts subcommand)]
+                (println stdout)
+                ;; (System/exit return-code)
+                ))))
+        (do
+          (println "Subcommand" (name subcommand) "doesn't exist")
+          (println "Available subcommands:" available-subcommands)))
+      (let [{:keys [stdout return-code]}
+            (dispatch-command parsed-opts nil)]
+        (when-not (empty? stdout)
+          (println stdout))
+        (System/exit return-code)))))
