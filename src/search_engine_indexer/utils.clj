@@ -1,6 +1,34 @@
 (ns search-engine-indexer.utils
-  (:require [clojure.java.io :as io])
-  (:import java.util.Properties))
+  (:require [clojure.edn :as edn]
+            [clojure.java.io :as io]
+            [clojure.string :as s])
+  (:import (java.io BufferedReader File FileOutputStream)
+           (java.util Properties)
+           (org.apache.commons.io FileUtils)))
+
+(defn remove-directory
+  [^File directory]
+  (FileUtils/deleteDirectory directory))
+
+(defn make-directory
+  [^File directory]
+  (.mkdirs directory))
+
+(defn string->int
+  [^String s]
+  (edn/read-string s))
+
+(def invalid-file-name-characters
+  "Gotten from https://en.wikipedia.org/wiki/Filename."
+  [\/ \\ \? \% \* \: \| \" \< \> \. \ ])
+
+(def invalid-file-name-characters-regex
+  (re-pattern (str "[" (apply str invalid-file-name-characters) "]")))
+
+(defn string->file-name
+  "Returns a string that is a valid file name given most file systems."
+  [^String s]
+  (s/replace s invalid-file-name-characters-regex "!"))
 
 (defn jar-path
   "Returns the full path of the JAR file in which this function is invoked."
@@ -37,16 +65,21 @@
 (defn lazy-file-seq
   "Create a lazy seq of lines from given file."
   [filename]
-  (letfn [(helper [r]
+  (letfn [(helper [^BufferedReader r]
             (lazy-seq (if-let [line (.readLine r)]
                         (do (cons line (helper r)))
                         (do (.close r) nil))))]
     (helper (io/reader filename))))
 
+(defn lazy-directory-list-seq
+  "Return a lazy seq of files in a directory"
+  [file]
+  (rest (file-seq (io/file file))))
+
 (defn truncate-file
   "Truncates file to zero bytes."
-  [file]
-  (with-open [chan (.getChannel (java.io.FileOutputStream. file true))]
+  [^File file]
+  (with-open [chan (.getChannel (FileOutputStream. file true))]
     (.truncate chan 0)))
 
 (defn files-equal?

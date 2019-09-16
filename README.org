@@ -3,12 +3,11 @@
   :header-args:bash: :session search_engine_indexer.sh :results none :exports code
   :END:
 
-  Builds an alphabetically sorted search term log file from unsorted search term
-  log files.
+  search-engine-indexer is a tool for working with search term log files.
 
 ** Dependencies
    search-engine-indexer can be run either from a JAR file or from a Docker
-   image.
+   image. We recommend running it from a JAR file for performance reasons.
 
 *** JAR file dependencies
     - Java
@@ -18,12 +17,12 @@
 
 ** Usage
    #+begin_src text
-   search-engine-indexer 0.1.0-SNAPSHOT
+   search-engine-indexer 0.2.0-SNAPSHOT
 
    search-engine-indexer is a tool for working with search term log files
 
    Usage
-     java -jar search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar [SUBCOMMAND] [OPTIONS]
+     java -jar search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar [SUBCOMMAND] [OPTIONS]
 
    Options
      -v, --version  Show version
@@ -39,24 +38,25 @@
      process
        --input-directory INPUT_DIRECTORY
        --output-file OUTPUT_FILE
+       --maximum-terms-in-memory MAXIMUM_TERMS_IN_MEMORY
    #+end_src
 
 *** JAR file
 **** Download
     #+begin_src bash
-    wget https://s3.amazonaws.com/search-engine-indexer/jars/search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar
+    wget https://s3.amazonaws.com/search-engine-indexer/jars/search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar
     #+end_src
 
 **** Run
     #+begin_src bash
-    java -jar search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar --help
+    java -jar search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar --help
     #+end_src
 
 *** Docker image
     Based on =openjdk:11.0.4-jre-slim= which is 204MB.
 
     #+begin_src bash
-    docker run mpereira/search-engine-indexer:0.1.0 --help
+    docker run mpereira/search-engine-indexer:0.2.0 --help
     #+end_src
 
 ** Implementation details
@@ -71,7 +71,10 @@
    =src/search_engine_indexer/processor.clj= has a ~process-directory~ function
    that does all the work. It takes as input an /input directory/ that should
    contain search term log files and an /output file/ path in which the
-   alphabetically sorted search terms will be created.
+   alphabetically sorted search terms will be created. It also takes a /maximum
+   terms in memory/ parameter which sets an upper bound on the memory usage of
+   the program. None of the program's in-memory objects can contain information
+   about more than that amount of search terms.
 
    The algorithm is:
    #+begin_src text
@@ -79,40 +82,110 @@
      For each line (search term) in the input file
         Increment in-memory sorted hash map entry for search term
 
-   For each "search term -> occurrence count" in the in-memory sorted hash map
-      Append the search term "occurrence count" times to the output file
+        If in-memory sorted hash map has more search terms than maximum
+            Flush in-memory sorted hash map to search term count files in disk
+
+   Aggregate in-disk flushed search term count files
+
+   For each aggregated search term count file, in alphabetical order
+      Append the search term "count" times to the output file
    #+end_src
 
    First, it streams each input file sequentially (only one line will be in
-   memory at a time) and accumulates counts in an in-memory sorted hash map.
+   memory at a time) and accumulates counts in an in-memory sorted hash map. The
+   sorted hash map keys are search terms and values are occurrence counts.
 
-   It then iterates sequentially through the in-memory sorted hash map and
-   appends lines to the output file.
+   Example
+   #+begin_src clojure
+   {"pinakotek" 2
+    "beer" 1}
+   #+end_src
 
-   Note that the search terms being read are not being held in memory all at the
-   same time. The in-memory sorted hash map only holds one key per search term,
-   with the number of its occurrences as the value. The worst case scenario for
-   this approach would be that the cardinality of search terms is too high, for
-   example if there are 1 billion unique search terms. In that case the memory
-   usage of the sorted hash map would impractical, requiring a different
-   approach.
+   The program keeps track of the total occurrence counts (in the case above it
+   would be =3=) and flushes search term count files to disk when the in-memory
+   sorted hash map is full. Flushing the above sorted hash map would result in
+   an empty in-memory sorted hash map (~{}~) and the following two files on disk:
 
-   The reads and writes to disk are all sequential, which should yield high
-   I/O throughput.
+   =pikakotek= contents:
+   #+begin_src text
+   pinakotek
+   2
+   #+end_src
 
-   This implementation has some similarities with LSM-Trees. The in-memory
-   sorted hash map could be seen as a memtable and the sorted search term output
-   file as an SSTable. Differently from LSM-Tree memtables our in-memory sorted
-   hash map values are integers instead of record byte streams and there's no
-   merging of SSTables (although there's a "merge" of sorts happening while the
-   in-memory sorted hash map is being built), and also no concept of a
-   write-ahead log.
+   =beer= contents:
+   #+begin_src text
+   beer
+   1
+   #+end_src
+
+   Assuming the in-memory sorted hash map is updated again:
+   #+begin_src clojure
+   {"pinakotek" 3
+    "ludwig" 5}
+   #+end_src
+
+   Flushing it would result in the following disk on disk:
+
+   =pikakotek= contents:
+   #+begin_src text
+   pinakotek
+   2
+   3
+   #+end_src
+
+   =beer= contents:
+   #+begin_src text
+   beer
+   1
+   #+end_src
+
+   =ludwig= contents:
+   #+begin_src text
+   beer
+   5
+   #+end_src
+
+   - The =pikakotek= file got appended to with a =3=
+   - The =beer= file stayed the same since there were no =beer= occurrences in the
+     sorted hash map
+   - The =ludwig= file was created with one occurrence count of =5=
+
+   After all intermediate per-search-term state files are written to disk, their
+   counts are aggregated (summed) and written to disk again. The result of
+   aggregating the files above would be:
+
+   =pikakotek= contents:
+   #+begin_src text
+   pinakotek
+   5
+   #+end_src
+
+   =beer= contents:
+   #+begin_src text
+   beer
+   1
+   #+end_src
+
+   =ludwig= contents:
+   #+begin_src text
+   beer
+   5
+   #+end_src
+
+   Disk reads and writes are all sequential and writes are all appends, which
+   should yield high I/O throughput. Multiple intermediate state files are
+   written to, which may cause disk seeks. This can be ameliorated by increasing
+   the /maximum terms in memory/ parameter, which will cause fewer intermediate
+   state file writes.
 
 ** Running a simulation
    Even though you're free to clone the repository and build artifacts yourself,
-   in this section we'll make use publicly available Docker images and AWS S3
-   objects. The only requirements to follow through the steps are Docker and
-   UNIX utilities.
+   in this section we'll make use publicly available AWS S3 objects. The only
+   requirements to follow through the steps are Java and UNIX utilities.
+
+   Even though there is a [[https://cloud.docker.com/u/mpereira/repository/docker/mpereira/search-engine-indexer][Docker image available]] for the search-engine-indexer,
+   we'll run the JAR instead so as to not observe reduced IO performance due to
+   doing operations inside a container.
 
 *** Create a directory for the simulation
     #+begin_src bash
@@ -162,37 +235,34 @@
     and their contents will come from the =german_beer_brands.txt= dictionary.
 
     #+begin_src bash
-    docker run \
-           -v "$(pwd)":/search-enginer-indexer-simulation \
-           -w /search-enginer-indexer-simulation \
-           mpereira/search-engine-indexer:0.1.0 \
-           generate \
-           --dictionary-file german_beer_brands.txt \
-           --number-of-output-files 10 \
-           --human-bytes-to-write 500MiB \
-           --output-directory beer_brand_search_terms
+    java -jar search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar \
+         generate \
+         --dictionary-file german_beer_brands.txt \
+         --number-of-output-files 10 \
+         --human-bytes-to-write 500MiB \
+         --output-directory beer_brand_search_terms
     #+end_src
 
     #+begin_src text
-    Dictionary file:                                            german_beer_brands.txt
-    Number of unsorted search term log output files:            10
-    Human-readable number bytes to write across output files:   500MiB
-    Output directory for unsorted search term log output files: beer_brand_search_terms
+    Dictionary file:                                             german_beer_brands.txt
+    Number of unsorted search term log output files:             10
+    Human-readable number bytes to write across output files:    500MiB
+    Output directory for unsorted search term log output files:  beer_brand_search_terms
 
     Read dictionary file with 77 terms
-    Created output directory '/search-enginer-indexer-simulation/beer_brand_search_terms'
+    Created output directory '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms'
     Writing 500MiB across 10 output files
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/0.log' (53195397 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/1.log' (53526913 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/2.log' (53302201 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/3.log' (53325166 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/4.log' (53429667 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/5.log' (53227899 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/6.log' (53329516 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/7.log' (53267992 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/8.log' (53290849 bytes)
-    Created '/search-enginer-indexer-simulation/beer_brand_search_terms/9.log' (53439552 bytes)
-    524288087 bytes written in 32.54 seconds (16.11 MB/s)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/0.log' (53373493 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/1.log' (53352471 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/2.log' (53449460 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/3.log' (53373374 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/4.log' (53234829 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/5.log' (53408870 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/6.log' (53197492 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/7.log' (53244232 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/8.log' (53490548 bytes)
+    Created '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/9.log' (53207869 bytes)
+    524288119 bytes written in 9.52 seconds (55.06 MB/s)
     #+end_src
 
 *** Verify =generate= output: the =beer_brand_search_terms= directory
@@ -212,10 +282,10 @@
      52M	beer_brand_search_terms/7.log
      52M	beer_brand_search_terms/8.log
      52M	beer_brand_search_terms/9.log
-     511M	beer_brand_search_terms
+     514M	beer_brand_search_terms
      #+end_src
 
-     Looks like the combined size of all generated files is 511M as reported by
+     Looks like the combined size of all generated files is 514M as reported by
      ~du~. Close enough!
 
 **** =beer_brand_search_terms/0.log= contents
@@ -265,117 +335,130 @@
 
     This command will read the unsorted search term log files in the
     =beer_brand_search_terms= directory and write their alphabetically sorted
-    search terms to =beer_brand_search_terms.log=.
+    search terms to =beer_brand_search_terms.log= while loading at most =100000=
+    (one hundred thousand) search terms (and even "search term"-derived data) in
+    any of the program's in-memory objects.
+
+    =maximum-terms-in-memory= sets a hard upper bound on the memory usage of the
+    program. Low values will result in having to write intermediate state to
+    disk more often, but with the advantage of using less memory. High values
+    will result in higher memory usage but less frequent disk writes.
+
+    The program will print a dot (=.=) every time it writes intermediate state
+    to disk.
 
     #+begin_src bash
-    docker run \
-           -v "$(pwd)":/search-enginer-indexer-simulation \
-           -w /search-enginer-indexer-simulation \
-           mpereira/search-engine-indexer:0.1.0 \
-           process \
-           --input-directory beer_brand_search_terms \
-           --output-file beer_brand_search_terms.log
+    java -jar search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar \
+         process \
+         --input-directory beer_brand_search_terms \
+         --output-file beer_brand_search_terms.log \
+         --maximum-terms-in-memory 100000
     #+end_src
 
     #+begin_src text
-    Input directory with unsorted search term log files: beer_brand_search_terms
-    Output file to be created with sorted search terms:  beer_brand_search_terms.log
+    Input directory with unsorted search term log files:           beer_brand_search_terms
+    Output file to be created with sorted search terms:            beer_brand_search_terms.log
+    Maximum number of search terms that will be loaded in memory:  100000
 
-    Processing files in '/search-enginer-indexer-simulation/beer_brand_search_terms'
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/4.log' (53429667 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/5.log' (53227899 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/7.log' (53267992 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/6.log' (53329516 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/2.log' (53302201 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/3.log' (53325166 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/1.log' (53526913 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/0.log' (53195397 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/8.log' (53290849 bytes)
-    '/search-enginer-indexer-simulation/beer_brand_search_terms/9.log' (53439552 bytes)
-    Term occurrences across all files in '/search-enginer-indexer-simulation/beer_brand_search_terms'
-    {"aktienbrauerei kaufbeuren" 361707,
-     "allgäuer brauerei" 361385,
-     "asgaard" 362369,
-     "augustiner-bräu" 361951,
-     "bayerische staatsbrauerei weihenstephan" 361723,
-     "berg brauerei" 362162,
-     "berliner pilsner" 361986,
-     "berliner weisse" 362102,
-     "bitburger brauerei" 361007,
-     "blue girl beer" 361741,
-     "bolten-brauerei" 361567,
-     "brauerei gebr. maisel" 362384,
-     "brauerei gold ochsen" 362003,
-     "brauerei kaiserdom" 362060,
-     "brauerei zur malzmühle" 362166,
-     "brauhaus am kreuzberg" 361935,
-     "cölner hofbräu früh" 362985,
-     "diebels" 361376,
-     "dortmunder actien brauerei" 361877,
-     "dortmunder export" 361212,
-     "eck brauerei" 361442,
-     "einbecker brauerei" 361434,
-     "erdinger" 362102,
-     "flensburger brauerei" 361101,
-     "freiberger brauhaus" 361685,
-     "fucking hell" 361530,
-     "fürstenberg brauerei" 361471,
-     "g. schneider & sohn" 362168,
-     "gaffel becker & co" 362535,
-     "ganter brauerei" 362331,
-     "gasthof herold" 361868,
-     "grafenwalder" 362092,
-     "hacker-pschorr brauerei" 361024,
-     "hasseröder" 362044,
-     "heinrich reissdorf" 362719,
-     "henninger brauerei" 363104,
-     "herrenhäuser brauerei" 361714,
-     "herzoglich bayerisches brauhaus tegernsee" 362280,
-     "hofbrauhaus arolsen" 362092,
-     "hofbräuhaus traunstein" 361007,
-     "holsten pils" 361668,
-     "janssen & bechly brauerei" 362102,
-     "jever brauerei" 362102,
-     "kaiser bräu" 362731,
-     "klosterbrauerei andechs" 363025,
-     "koblenzer brauerei" 362461,
-     "krombacher brauerei" 361579,
-     "kronen" 361672,
-     "kuchlbauer brauerei" 361432,
-     "kulmbacher brauerei" 362526,
-     "könig brauerei" 359871,
-     "könig ludwig schlossbrauerei" 361767,
-     "köstritzer" 362411,
-     "licher brauerei" 360917,
-     "list of brewing companies in germany" 361514,
-     "löwenbräu brauerei" 361626,
-     "maisel brau bamberg" 360708,
-     "mecklenburgische brauerei lübz" 362116,
-     "oettinger brauerei" 362313,
-     "paulaner brauerei" 362913,
-     "pinkus müller" 360259,
-     "privatbrauerei wittingen" 360825,
-     "radeberger brauerei" 362757,
-     "rhanerbräu" 362653,
-     "riegele" 360574,
-     "rothaus" 360943,
-     "spaten-franziskaner-bräu" 361216,
-     "st. erhard brauerei" 361514,
-     "st. pauli girl" 362398,
-     "staatliches hofbräuhaus in münchen" 361530,
-     "stadtbrauerei spalt" 361007,
-     "störtebeker braumanufaktur" 362815,
-     "veltins brauerei" 361822,
-     "vitamalz" 361108,
-     "warsteiner" 360673,
-     "wernesgrüner" 363061,
-     "zötler brauerei" 361160}
-    Writing sorted search terms to '/search-enginer-indexer-simulation/beer_brand_search_terms.log'
-    533335152 bytes processed in 104.75 seconds (5.09 MB/s)
+    Processing files in '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms'
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/4.log' (53234829 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/5.log' (53408870 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/7.log' (53244232 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/6.log' (53197492 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/2.log' (53449460 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/3.log' (53373374 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/1.log' (53352471 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/0.log' (53373493 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/8.log' (53490548 bytes)
+    '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms/9.log' (53207869 bytes)
+    ................................................................................
+    ................................................................................
+    ................................................................................
+    ......................................
+    Term occurrences across all files in '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms'
+    bitburger brauerei 361785
+    rhanerbräu 361396
+    brauerei kaiserdom 361197
+    kaiser bräu 361340
+    janssen & bechly brauerei 361436
+    allgäuer brauerei 361344
+    maisel brau bamberg 361833
+    warsteiner 361298
+    flensburger brauerei 361238
+    grafenwalder 361759
+    riegele 361593
+    stadtbrauerei spalt 361926
+    herrenhäuser brauerei 362955
+    cölner hofbräu früh 361246
+    staatliches hofbräuhaus in münchen 362137
+    köstritzer 361556
+    vitamalz 362119
+    diebels 362229
+    gaffel becker & co 362011
+    könig brauerei 361475
+    kulmbacher brauerei 363133
+    ganter brauerei 362291
+    koblenzer brauerei 361592
+    henninger brauerei 361975
+    radeberger brauerei 362361
+    fucking hell 361826
+    eck brauerei 362925
+    kronen 361306
+    jever brauerei 361465
+    dortmunder actien brauerei 361335
+    paulaner brauerei 362367
+    hacker-pschorr brauerei 362352
+    heinrich reissdorf 361952
+    augustiner-bräu 361084
+    pinkus müller 361765
+    rothaus 361821
+    fürstenberg brauerei 362942
+    hofbräuhaus traunstein 361885
+    hofbrauhaus arolsen 361563
+    brauerei gold ochsen 361317
+    krombacher brauerei 362392
+    asgaard 361576
+    oettinger brauerei 361047
+    berliner weisse 361244
+    privatbrauerei wittingen 362169
+    list of brewing companies in germany 362604
+    brauhaus am kreuzberg 362427
+    st. pauli girl 362812
+    wernesgrüner 360750
+    st. erhard brauerei 361367
+    brauerei zur malzmühle 362470
+    berliner pilsner 360501
+    berg brauerei 362180
+    dortmunder export 360860
+    veltins brauerei 361039
+    löwenbräu brauerei 361902
+    klosterbrauerei andechs 360792
+    gasthof herold 362595
+    bayerische staatsbrauerei weihenstephan 362417
+    könig ludwig schlossbrauerei 362034
+    bolten-brauerei 361136
+    störtebeker braumanufaktur 362091
+    hasseröder 361948
+    aktienbrauerei kaufbeuren 361275
+    kuchlbauer brauerei 361407
+    brauerei gebr. maisel 362642
+    blue girl beer 361557
+    freiberger brauhaus 362633
+    mecklenburgische brauerei lübz 362538
+    spaten-franziskaner-bräu 361510
+    herzoglich bayerisches brauhaus tegernsee 360992
+    licher brauerei 361457
+    holsten pils 362102
+    einbecker brauerei 361594
+    zötler brauerei 361620
+    erdinger 361485
+    g. schneider & sohn 361815
+    Wrote sorted search terms to '/Users/murilo/git/search-engine-indexer/search-enginer-indexer-simulation/beer_brand_search_terms.log'
+    533332638 bytes (27858110 search terms) processed in 30.02 seconds (17.76 MB/s)
     #+end_src
 
-    We can see that the in-memory sorted hash map is shown in the command
-    output.
+    We can see both the per-"search term" and total occurrence counts in the
+    command output. The total number of search terms processed was =27858110=.
 
 *** Verify =process= output: =beer_brand_search_terms.log=
 **** Size
@@ -407,9 +490,21 @@
 
      This is good evidence that the file is actually alphabetically sorted.
 
+**** Total search terms count
+     #+begin_src bash
+     cat beer_brand_search_terms.log | wc -l
+     #+end_src
+
+     #+begin_src text
+     27858110
+     #+end_src
+
+     =27858110= (~27.8 million) is the number of search terms shown in the end
+     of the output for the [[#process-input-directory-with-randomly-generated-search-term-log-files-beer_brand_search_terms][Process input directory]] step, so this looks good.
+
 **** Unique search terms count
      #+begin_src bash
-     uniq beer_brand_search_terms.log | wc -l
+     cat beer_brand_search_terms.log | uniq | wc -l
      #+end_src
 
      #+begin_src text
@@ -424,21 +519,21 @@
      #+end_src
 
      #+begin_src text
-     361707 aktienbrauerei kaufbeuren
-     361385 allgäuer brauerei
-     362369 asgaard
-     361951 augustiner-bräu
-     361723 bayerische staatsbrauerei weihenstephan
-     362162 berg brauerei
-     361986 berliner pilsner
-     362102 berliner weisse
-     361007 bitburger brauerei
-     361741 blue girl beer
+     361275 aktienbrauerei kaufbeuren
+     361344 allgäuer brauerei
+     361576 asgaard
+     361084 augustiner-bräu
+     362417 bayerische staatsbrauerei weihenstephan
+     362180 berg brauerei
+     360501 berliner pilsner
+     361244 berliner weisse
+     361785 bitburger brauerei
+     361557 blue girl beer
      #+end_src
 
      It seems that the search terms were written in order, otherwise =uniq -c=
      wouldn't have worked. Also, comparing the output above with the output
-     produced in the [[#verify-process-output-beer_brand_search_termslog][Verify =process= output]] step should demonstrate that search
+     produced in the [[#process-input-directory-with-randomly-generated-search-term-log-files-beer_brand_search_terms][Process input directory]] step should demonstrate that search
      terms were written correctly.
 
 *** That's it
@@ -446,6 +541,48 @@
     combined them into an alphabetically sorted search term log file and
     verified that the outputs were correct. Feel free to run simulations with
     different parameters!
+
+    Just for fun, let's try a much smaller =maximum-terms-in-memory= value.
+    Let's set it to =1000=. We'd expect reduced throughput given more frequent
+    intermediate state writes to disk.
+
+    #+begin_src bash
+    java -jar search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar \
+         process \
+         --input-directory beer_brand_search_terms \
+         --output-file beer_brand_search_terms.log \
+         --maximum-terms-in-memory 1000 \
+      | grep 'processed in'
+    #+end_src
+
+    #+begin_src bash
+    533332638 bytes (27858110 search terms) processed in 233.20 seconds (2.29 MB/s)
+    #+end_src
+
+    We can see one order of magnitude less throughput (~17 MB/s -> ~2 MB/s) by
+    decreasing =maximum-terms-in-memory= three orders of magnitude (100000 ->
+    1000).
+
+    Let's see what happens when setting it to a much higher value, =10000000=
+    (10 million). Based on the total number of search terms we've seen above
+    (~27.8 million) the in-memory buffer will be flushed to disk at most thrice.
+
+    #+begin_src bash
+    java -jar search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar \
+         process \
+         --input-directory beer_brand_search_terms \
+         --output-file beer_brand_search_terms.log \
+         --maximum-terms-in-memory 10000000 \
+      | grep 'processed in'
+    #+end_src
+
+    #+begin_src bash
+    533332638 bytes (27858110 search terms) processed in 28.49 seconds (18.72 MB/s)
+    #+end_src
+
+    Only a marginal throughput improvement from =100000=. Likely means that at
+    those parameter sizes the bottleneck isn't in intermediate state file disk
+    writes.
 
 ** Development
    Work on search-engine-indexer is mostly done on Emacs. The workflow looks
@@ -483,13 +620,13 @@
 *** Publishing uberjar
     #+begin_src bash
     aws s3 cp --acl public-read \
-      target/uberjar/search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar \
-      s3://search-engine-indexer/jars/search-engine-indexer-0.1.0-SNAPSHOT-standalone.jar
+      target/uberjar/search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar \
+      s3://search-engine-indexer/jars/search-engine-indexer-0.2.0-SNAPSHOT-standalone.jar
     #+end_src
 
 *** Building Docker image
     #+begin_src bash
-    docker build -t mpereira/search-engine-indexer:0.1.0 .
+    docker build -t mpereira/search-engine-indexer:0.2.0 .
     #+end_src
 
 *** Publishing Docker image
@@ -498,7 +635,7 @@
     #+end_src
 
     #+begin_src bash
-    docker push mpereira/search-engine-indexer:0.1.0
+    docker push mpereira/search-engine-indexer:0.2.0
     #+end_src
 
 ** License

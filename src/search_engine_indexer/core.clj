@@ -1,10 +1,10 @@
 (ns search-engine-indexer.core
-  (:gen-class)
   (:require [clojure.string :as s]
             [clojure.tools.cli :refer [parse-opts]]
             [search-engine-indexer.generator :as generator]
             [search-engine-indexer.processor :as processor]
-            [search-engine-indexer.utils :refer [jar-path version]]))
+            [search-engine-indexer.utils :refer [jar-path version]])
+  (:gen-class))
 
 (def program-name "search-engine-indexer")
 
@@ -35,15 +35,21 @@
                                                human-bytes-to-write
                                                output-directory))
 
-(defn run-process [{:keys [input-directory output-file]}]
-  (assert (and input-directory output-file)
+(defn run-process [{:keys [input-directory
+                           output-file
+                           maximum-terms-in-memory]}]
+  (assert (and input-directory output-file maximum-terms-in-memory)
           "all parameters must be present")
-  (println "Input directory with unsorted search term log files: "
+  (println "Input directory with unsorted search term log files:          "
            input-directory)
-  (println "Output file to be created with sorted search terms:  "
+  (println "Output file to be created with sorted search terms:           "
            output-file)
+  (println "Maximum number of search terms that will be loaded in memory: "
+           maximum-terms-in-memory)
   (println "")
-  (processor/process-directory input-directory output-file))
+  (processor/process-directory input-directory
+                               output-file
+                               maximum-terms-in-memory))
 
 (def runners
   {:generate run-generate
@@ -75,7 +81,11 @@
               :id :input-directory]
              [nil "--output-file OUTPUT_FILE"
               "Output file to be created with sorted search terms"
-              :id :output-file]]})
+              :id :output-file]
+             [nil "--maximum-terms-in-memory MAXIMUM_TERMS_IN_MEMORY"
+              "Maximum number of search terms that will be loaded in memory"
+              :parse-fn #(Integer/parseInt %)
+              :id :maximum-terms-in-memory]]})
 
 (def available-subcommands (set (keys cli-options)))
 
@@ -175,4 +185,5 @@
             (dispatch-command parsed-opts nil)]
         (when-not (empty? stdout)
           (println stdout))
-        (System/exit return-code)))))
+        ;; (System/exit return-code)
+        ))))
