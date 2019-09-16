@@ -14,6 +14,10 @@
   [^File directory]
   (.mkdirs directory))
 
+(defn directory-size
+  [^File directory]
+  (FileUtils/sizeOfDirectory directory))
+
 (defn string->int
   [^String s]
   (edn/read-string s))
@@ -94,3 +98,44 @@
                 (reduced false)))
             true
             combined-seq)))
+
+(def byte-size-units
+  "TODO: docstring."
+  {:b 1
+   :kb 1000
+   :mb (Math/pow 1000 2)
+   :gb (Math/pow 1000 3)
+   :tb (Math/pow 1000 4)
+   :kib 1024
+   :mib (Math/pow 1024 2)
+   :gib (Math/pow 1024 3)
+   :tib (Math/pow 1024 4)})
+
+(def human-regex
+  "TODO: docstring."
+  (let [units-regex (->> (keys byte-size-units)
+                         (map name)
+                         (s/join "|")
+                         (#(str "(" % ")?")))
+        size-regex "((?:\\d+\\.)?\\d+)"
+        regex-string (str "(?i)" size-regex "\\s*" units-regex "\\b")]
+    (re-pattern regex-string)))
+
+(defn human->bytes
+  "TODO: docstring."
+  [human]
+  (let [[match? number-string unit-string] (re-find human-regex human)
+        number (edn/read-string number-string)
+        unit (and unit-string (keyword (s/lower-case unit-string)))]
+    (assert match? (str "'" human "' isn't a valid unit pattern"))
+    (* number (or (get byte-size-units unit) 1))))
+
+(defn bytes->human
+  "TODO: docstring."
+  [bytes* {:keys [in]}]
+  (let [unit (keyword (s/lower-case (name in)))]
+    (assert
+     (contains? byte-size-units unit)
+     (str "'" in "'" " isn't a valid unit. Valid units are: "
+          (keys byte-size-units)))
+    (* bytes* (get byte-size-units unit))))

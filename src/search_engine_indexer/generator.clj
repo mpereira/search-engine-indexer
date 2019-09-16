@@ -2,44 +2,10 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as s]
-            [search-engine-indexer.utils :refer [lazy-file-seq runtime]]))
-
-(def units
-  "TODO: docstring."
-  {:b 1
-   :kb 1000
-   :mb (Math/pow 1000 2)
-   :gb (Math/pow 1000 3)
-   :tb (Math/pow 1000 4)
-   :kib 1024
-   :mib (Math/pow 1024 2)
-   :gib (Math/pow 1024 3)
-   :tib (Math/pow 1024 4)})
-
-(def human-regex
-  "TODO: docstring."
-  (let [units-regex (->> (keys units) (map name) (s/join "|") (#(str "(" % ")?")))
-        size-regex "((?:\\d+\\.)?\\d+)"
-        regex-string (str "(?i)" size-regex "\\s*" units-regex "\\b")]
-    (re-pattern regex-string)))
-
-(defn human->bytes
-  "TODO: docstring."
-  [human]
-  (let [[match? number-string unit-string] (re-find human-regex human)
-        number (edn/read-string number-string)
-        unit (and unit-string (keyword (s/lower-case unit-string)))]
-    (assert match? (str "'" human "' isn't a valid unit pattern"))
-    (* number (or (get units unit) 1))))
-
-(defn bytes->human
-  "TODO: docstring."
-  [bytes* {:keys [in]}]
-  (let [unit (keyword (s/lower-case (name in)))]
-    (assert
-     (contains? units unit)
-     (str "'" in "'" " isn't a valid unit. Valid units are: " (keys units)))
-    (* bytes* (get units unit))))
+            [search-engine-indexer.utils :refer [human->bytes
+                                                 lazy-file-seq
+                                                 make-directory
+                                                 runtime]]))
 
 (defn generate-random-search-term-files
   "TODO: docstring."
@@ -54,7 +20,7 @@
             terms (vec (lazy-file-seq dictionary-file))
             number-of-terms (count terms)
             _ (println "Read dictionary file with" number-of-terms "terms")
-            _ (.mkdir (io/file output-directory))
+            _ (make-directory (io/file output-directory))
             output-directory-file (io/file output-directory)
             _ (println "Created output directory"
                        (str "'" (.getAbsolutePath output-directory-file) "'"))
